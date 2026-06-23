@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>소책자</title>
+<style>
+  :root { --bg:#e9e9ec; --ui:#3a3a40; --text:#2b2b2e; --chip:rgba(255,255,255,.85); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+    overflow:hidden; }
+  .mode { position:fixed; inset:0; transition:opacity .25s ease; }
+  .mode.off { opacity:0; pointer-events:none; }
+
+  /* 데스크톱·가로 : 책 펼침 플립 */
+  #flipMode { display:flex; align-items:center; justify-content:center; padding:10px 6px 64px; }
+  #book { margin:0 auto; }
+  #book .page { background:#fff; }
+  #book .page img { width:100%; height:100%; display:block; }
+
+  /* 모바일 세로 : 한 장씩 슬라이드. 일반 페이지는 따로, 양면 이미지만 한 슬라이드에 붙임 */
+  #track { position:absolute; inset:0; bottom:60px; display:flex; overflow-x:auto; overflow-y:hidden;
+    scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+  #track::-webkit-scrollbar { display:none; }
+  #track::before, #track::after { content:""; flex:0 0 6%; }  /* 양 끝 여백 → 표지·뒤표지도 가운데 정렬 */
+  .slide { flex:0 0 88%; height:100%; scroll-snap-align:center; scroll-snap-stop:always;
+    display:flex; align-items:center; justify-content:center; padding:8px 0; }
+  .slide.gap { margin-left:12%; }   /* 새 펼침/단독 시작 → 앞쪽 간격(경계는 peek 안 됨) */
+  .slide.solo { margin-right:12%; } /* 표지·뒤표지: 양쪽 간격 → 옆에 아무것도 peek 안 됨(크기는 동일) */
+  .slide img { max-width:100%; max-height:100%; width:auto; height:auto;
+    box-shadow:0 3px 16px rgba(0,0,0,.22); background:#fff; }
+
+  #bar { position:fixed; left:0; right:0; bottom:0; height:56px; display:flex; align-items:center;
+    justify-content:center; gap:10px; padding-bottom:env(safe-area-inset-bottom); z-index:20; }
+  .btn { appearance:none; border:1px solid rgba(0,0,0,.14); background:var(--chip);
+    color:var(--ui); width:42px; height:42px; border-radius:50%; font-size:18px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; transition:.15s;
+    box-shadow:0 1px 4px rgba(0,0,0,.12); }
+  .btn:hover { background:var(--ui); color:#fff; }
+  .btn:disabled { opacity:.35; cursor:default; }
+  #pageInfo { min-width:88px; text-align:center; font-variant-numeric:tabular-nums; font-size:14px;
+    color:var(--ui); background:var(--chip); padding:8px 12px; border-radius:20px;
+    box-shadow:0 1px 4px rgba(0,0,0,.12); }
+
+  #loader { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:16px; background:var(--bg); z-index:50; transition:opacity .4s; }
+  #loader.hidden { opacity:0; pointer-events:none; }
+  .ring { width:44px; height:44px; border:3px solid rgba(0,0,0,.14); border-top-color:var(--ui);
+    border-radius:50%; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #progText { font-size:13px; color:#777; letter-spacing:.04em; }
+  #errBox { display:none; max-width:80%; text-align:center; color:#b00020; font-size:14px; line-height:1.6; }
+</style>
+</head>
+<body>
+  <div id="flipMode" class="mode"><div id="book"></div></div>
+  <div id="slideMode" class="mode off"><div id="track"></div></div>
+
+  <div id="bar">
+    <button class="btn" id="prev" aria-label="이전">‹</button>
+    <div id="pageInfo">표지</div>
+    <button class="btn" id="next" aria-label="다음">›</button>
+    <button class="btn" id="full" aria-label="전체화면">⤢</button>
+  </div>
+
+  <div id="loader">
+    <div class="ring"></div>
+    <div id="progText">불러오는 중…</div>
+    <div id="errBox"></div>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
+<script>
+(function () {
+  "use strict";
+  var PDF_URL = "book.pdf";
+  var RENDER_WIDTH = 1300;
+
+  var loader = document.getElementById("loader");
+  var progText = document.getElementById("progText");
+  var errBox = document.getElementById("errBox");
+  var bookEl = document.getElementById("book");
+  var flipMode = document.getElementById("flipMode");
+  var slideMode = document.getElementById("slideMode");
+  var track = document.getElementById("track");
+  var info = document.getElementById("pageInfo");
+  var prevBtn = document.getElementById("prev");
+  var nextBtn = document.getElementById("next");
+
+  function fail(msg) {
+    document.querySelector(".ring").style.display = "none";
+    progText.style.display = "none";
+    errBox.style.display = "block";
+    errBox.innerHTML = msg;
+  }
+  if (!window.pdfjsLib) { return fail("PDF 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요."); }
+  if (!window.St || !window.St.PageFlip) { return fail("페이지 플립 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요."); }
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  pdfjsLib.getDocument(PDF_URL).promise.then(function (pdf) {
+    var n = pdf.numPages;
+    var images = new Array(n);
+    var ratio = 148 / 210;
+    var chain = Promise.resolve();
+    var done = 0;
+    for (var i = 1; i <= n; i++) {
+      (function (pageNum) {
+        chain = chain.then(function () {
+          return pdf.getPage(pageNum).then(function (page) {
+            var base = page.getViewport({ scale: 1 });
+            if (pageNum === 1) ratio = base.width / base.height;
+            var vp = page.getViewport({ scale: RENDER_WIDTH / base.width });
+            var c = document.createElement("canvas");
+            c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+            return page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise.then(function () {
+              images[pageNum - 1] = c.toDataURL("image/jpeg", 0.9);
+              done++; progText.textContent = "불러오는 중… " + Math.round((done / n) * 100) + "%";
+            });
+          });
+        });
+      })(i);
+    }
+    chain.then(function () { start(images, ratio); })
+      .catch(function (e) { fail("페이지를 그리는 중 오류: " + (e && e.message ? e.message : e)); });
+  }).catch(function (e) {
+    fail("PDF를 불러오지 못했습니다. <b>book.pdf</b>가 같은 폴더에 있고,<br>웹 서버(또는 GitHub Pages)에서 열고 있는지 확인하세요.<br><small>" +
+         (e && e.message ? e.message : e) + "</small>");
+  });
+
+  function start(images, ratio) {
+    var total = images.length;           // 20 : [앞표지, 면지, 본문1..17, 뒤표지]
+    var bodyTotal = total - 3;           // 17
+
+    /* ───── 플립(데스크톱·가로) : HTML 모드 + 하드커버 ───── */
+    images.forEach(function (src, i) {
+      var d = document.createElement("div");
+      d.className = "page";
+      if (i === 0 || i === total - 1) d.setAttribute("data-density", "hard");
+      var img = new Image(); img.src = src; d.appendChild(img);
+      bookEl.appendChild(d);
+    });
+    var baseW = 500, baseH = Math.round(baseW / ratio);
+    var pageFlip = new St.PageFlip(bookEl, {
+      width: baseW, height: baseH, size: "stretch",
+      minWidth: 220, maxWidth: 900, minHeight: Math.round(220 / ratio), maxHeight: Math.round(900 / ratio),
+      showCover: true, usePortrait: false, mobileScrollSupport: false,
+      maxShadowOpacity: 0.08, drawShadow: true, flippingTime: 700, autoSize: true
+    });
+    pageFlip.loadFromHTML(bookEl.querySelectorAll(".page"));
+
+    /* ───── 슬라이드(모바일 세로) : 한 페이지씩 크게. 짝(붙는 면)일 때만 파트너가 옆에 peek, 경계는 간격 ───── */
+    var labels = [];
+    function addSlide(imgIdx, label, gap, solo) {
+      var s = document.createElement("div");
+      s.className = "slide" + (gap ? " gap" : "") + (solo ? " solo" : "");
+      var im = new Image(); im.src = images[imgIdx]; s.appendChild(im);
+      track.appendChild(s); labels.push(label);
+    }
+    addSlide(0, "표지", false, true);                        // 표지 단독(전체폭, peek 없음)
+    addSlide(2, "본문 1 / " + bodyTotal, true);              // 본문1 단독
+    for (var k = 2; k <= bodyTotal - 1; k += 2) {            // 펼침 쌍 (2·3),(4·5)…(16·17)
+      addSlide(k + 1, "본문 " + k + " / " + bodyTotal, true);          // 왼쪽 면 (앞에 간격)
+      addSlide(k + 2, "본문 " + (k + 1) + " / " + bodyTotal, false);   // 오른쪽 면 (왼쪽 면이 옆에 peek)
+    }
+    addSlide(total - 1, "뒤표지", true, true);               // 뒤표지 단독(전체폭, peek 없음)
+    var slides = track.children;
+    function curSlide() {
+      var c = track.scrollLeft + track.clientWidth / 2, best = 0, bd = 1e9;
+      for (var i = 0; i < slides.length; i++) {
+        var center = slides[i].offsetLeft + slides[i].offsetWidth / 2;
+        var d = Math.abs(center - c); if (d < bd) { bd = d; best = i; }
+      }
+      return best;
+    }
+    function scrollToSlide(k) {
+      k = Math.max(0, Math.min(slides.length - 1, k));
+      var s = slides[k];
+      track.scrollTo({ left: s.offsetLeft - (track.clientWidth - s.offsetWidth) / 2, behavior: "smooth" });
+    }
+
+    /* ───── 모드 전환 ───── */
+    var mq = window.matchMedia("(orientation: portrait)");
+    var mobile = false;
+    function applyMode() {
+      mobile = mq.matches;
+      flipMode.classList.toggle("off", mobile);
+      slideMode.classList.toggle("off", !mobile);
+      updateLabel();
+    }
+
+    function updateLabel() {
+      if (mobile) {
+        var k = curSlide();
+        info.textContent = labels[k] || "";
+        prevBtn.disabled = (k <= 0);
+        nextBtn.disabled = (k >= slides.length - 1);
+      } else {
+        var p = pageFlip.getCurrentPageIndex();
+        if (p <= 0) info.textContent = "표지";
+        else if (p >= total - 1) info.textContent = "뒤표지";
+        else if (p === 1) info.textContent = "면지";
+        else {
+          var l = p - 1, r = p;
+          info.textContent = "본문 " + l + "–" + r + " / " + bodyTotal;
+        }
+        prevBtn.disabled = (p <= 0);
+        nextBtn.disabled = (p >= total - 1);
+      }
+    }
+
+    pageFlip.on("flip", function () { if (!mobile) updateLabel(); });
+    pageFlip.on("changeState", function () { if (!mobile) updateLabel(); });
+    var st;
+    track.addEventListener("scroll", function () {
+      clearTimeout(st); st = setTimeout(function () { if (mobile) updateLabel(); }, 80);
+    });
+
+    function goPrev() {
+      if (mobile) scrollToSlide(curSlide() - 1);
+      else pageFlip.flipPrev();
+    }
+    function goNext() {
+      if (mobile) scrollToSlide(curSlide() + 1);
+      else pageFlip.flipNext();
+    }
+    prevBtn.addEventListener("click", goPrev);
+    nextBtn.addEventListener("click", goNext);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowLeft") goPrev();
+      if (e.key === "ArrowRight") goNext();
+    });
+    document.getElementById("full").addEventListener("click", function () {
+      var el = document.documentElement;
+      if (!document.fullscreenElement) (el.requestFullscreen || el.webkitRequestFullscreen || function(){}).call(el);
+      else (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+    });
+
+    if (mq.addEventListener) mq.addEventListener("change", applyMode);
+    else mq.addListener(applyMode);
+
+    applyMode();
+    loader.classList.add("hidden");
+    setTimeout(function () { loader.style.display = "none"; }, 450);
+  }
+})();
+</script>
+</body>
+</html>
