@@ -14,15 +14,20 @@
   .mode.off { opacity:0; pointer-events:none; }
 
   /* 데스크톱·가로 : 책 펼침 플립 */
-  #flipMode { display:flex; align-items:center; justify-content:center; padding:10px 6px 64px; }
-  #book { margin:0 auto; position:relative; }
-  #book .page { background:#fff; }
+  #flipMode { display:flex; align-items:center; justify-content:center; padding:0 0 56px; }
+  /* 펼침면 비율(1.41:1) 컨테이너 — 높이의 90%에 맞춰 커지고(여유) 폭은 95vw로 제한 */
+  #bookBox { height:90%; aspect-ratio:1.41 / 1; max-width:95vw; }
+  #book { width:100%; height:100%; margin:0 auto; position:relative; }
+  #book .page { background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.28); }  /* 각 면 외곽 그림자(정지·넘김 모두, 표지 정상) */
   #book .page img { width:100%; height:100%; display:block; }
-  /* 펼침면 가운데 접지(거터) 그림자 — 표지/뒤표지(single)에선 숨김 */
-  #flipMode:not(.single) #book::after {
-    content:""; position:absolute; top:0; bottom:0; left:50%; width:7%;
-    transform:translateX(-50%); pointer-events:none; z-index:3;
-    background:linear-gradient(90deg,rgba(0,0,0,0),rgba(0,0,0,.12) 42%,rgba(0,0,0,.20) 50%,rgba(0,0,0,.12) 58%,rgba(0,0,0,0)); }
+  /* 하드커버(표지·뒤표지) 넘길 때 StPageFlip이 그리는 각진(blur 없는) 그림자를 부드럽게 */
+  #flipMode .stf__hardShadow, #flipMode .stf__hardInnerShadow { filter:blur(12px); }
+  /* 정지 시 양쪽 대칭 접지(거터) — 부드럽게 페이드 인/아웃, 넘길 땐 native가 맡음 */
+  #book::after {
+    content:""; position:absolute; top:0; bottom:0; left:50%; width:1.5%; transform:translateX(-50%);
+    pointer-events:none; z-index:6; opacity:0; transition:opacity .45s ease;
+    background:linear-gradient(90deg,rgba(0,0,0,0),rgba(0,0,0,.03) 35%,rgba(0,0,0,.06) 50%,rgba(0,0,0,.03) 65%,rgba(0,0,0,0)); }
+  #flipMode.gutter-on #book::after { opacity:1; }
 
   /* 모바일 세로 : 한 장씩 슬라이드. 일반 페이지는 따로, 양면 이미지만 한 슬라이드에 붙임 */
   #track { position:absolute; inset:0; bottom:60px; display:flex; overflow-x:auto; overflow-y:hidden;
@@ -59,7 +64,7 @@
 </style>
 </head>
 <body>
-  <div id="flipMode" class="mode"><div id="book"></div></div>
+  <div id="flipMode" class="mode"><div id="bookBox"><div id="book"></div></div></div>
   <div id="slideMode" class="mode off"><div id="track"></div></div>
 
   <div id="bar">
@@ -147,16 +152,13 @@
       var img = new Image(); img.src = src; d.appendChild(img);
       bookEl.appendChild(d);
     });
-    // 화면에 맞춰 책 최대 크기 산출(펼침면이 화면을 넘지 않게)
-    var availH = Math.max(320, window.innerHeight - 88);   // 상하 패딩 + 하단 바
-    var availW = Math.max(320, window.innerWidth - 28);
-    var pageH = Math.min(availH, availW / (2 * ratio));    // 한 면 높이
-    var maxH = Math.round(pageH), maxW = Math.round(pageH * ratio);
+    // 크기는 #bookBox(높이 90%, 펼침 비율)가 결정. StPageFlip은 그 안에 stretch로 채움(autoSize:false)
+    var baseW = 600, baseH = Math.round(baseW / ratio);
     var pageFlip = new St.PageFlip(bookEl, {
-      width: maxW, height: maxH, size: "stretch",
-      minWidth: 200, maxWidth: maxW, minHeight: Math.round(200 / ratio), maxHeight: maxH,
+      width: baseW, height: baseH, size: "stretch",
+      minWidth: 200, maxWidth: 1600, minHeight: Math.round(200 / ratio), maxHeight: 2400,
       showCover: true, usePortrait: false, mobileScrollSupport: false,
-      maxShadowOpacity: 0.08, drawShadow: true, flippingTime: 700, autoSize: true
+      maxShadowOpacity: 0.16, drawShadow: true, flippingTime: 700, autoSize: false
     });
     pageFlip.loadFromHTML(bookEl.querySelectorAll(".page"));
 
@@ -221,8 +223,16 @@
       }
     }
 
-    pageFlip.on("flip", function () { if (!mobile) updateLabel(); });
-    pageFlip.on("changeState", function () { if (!mobile) updateLabel(); });
+    function setGutter(on) { flipMode.classList.toggle("gutter-on", on); }
+    function atSpread() { var p = pageFlip.getCurrentPageIndex(); return p > 0 && p < total - 1; }
+    pageFlip.on("flip", function () {        // 넘김이 일어나면(시작) 즉시 거터 숨김 → 페이드 아웃
+      if (mobile) return; setGutter(false); updateLabel();
+    });
+    pageFlip.on("changeState", function (e) {
+      if (mobile) return;
+      setGutter(e.data === "read" && atSpread());   // 멈췄고 펼침면일 때만 거터 표시 → 페이드 인
+      updateLabel();
+    });
     var st;
     track.addEventListener("scroll", function () {
       clearTimeout(st); st = setTimeout(function () { if (mobile) updateLabel(); }, 80);
