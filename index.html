@@ -15,9 +15,14 @@
 
   /* 데스크톱·가로 : 책 펼침 플립 */
   #flipMode { display:flex; align-items:center; justify-content:center; padding:10px 6px 64px; }
-  #book { margin:0 auto; }
+  #book { margin:0 auto; position:relative; }
   #book .page { background:#fff; }
   #book .page img { width:100%; height:100%; display:block; }
+  /* 펼침면 가운데 접지(거터) 그림자 — 표지/뒤표지(single)에선 숨김 */
+  #flipMode:not(.single) #book::after {
+    content:""; position:absolute; top:0; bottom:0; left:50%; width:7%;
+    transform:translateX(-50%); pointer-events:none; z-index:3;
+    background:linear-gradient(90deg,rgba(0,0,0,0),rgba(0,0,0,.12) 42%,rgba(0,0,0,.20) 50%,rgba(0,0,0,.12) 58%,rgba(0,0,0,0)); }
 
   /* 모바일 세로 : 한 장씩 슬라이드. 일반 페이지는 따로, 양면 이미지만 한 슬라이드에 붙임 */
   #track { position:absolute; inset:0; bottom:60px; display:flex; overflow-x:auto; overflow-y:hidden;
@@ -142,10 +147,14 @@
       var img = new Image(); img.src = src; d.appendChild(img);
       bookEl.appendChild(d);
     });
-    var baseW = 500, baseH = Math.round(baseW / ratio);
+    // 화면에 맞춰 책 최대 크기 산출(펼침면이 화면을 넘지 않게)
+    var availH = Math.max(320, window.innerHeight - 88);   // 상하 패딩 + 하단 바
+    var availW = Math.max(320, window.innerWidth - 28);
+    var pageH = Math.min(availH, availW / (2 * ratio));    // 한 면 높이
+    var maxH = Math.round(pageH), maxW = Math.round(pageH * ratio);
     var pageFlip = new St.PageFlip(bookEl, {
-      width: baseW, height: baseH, size: "stretch",
-      minWidth: 220, maxWidth: 900, minHeight: Math.round(220 / ratio), maxHeight: Math.round(900 / ratio),
+      width: maxW, height: maxH, size: "stretch",
+      minWidth: 200, maxWidth: maxW, minHeight: Math.round(200 / ratio), maxHeight: maxH,
       showCover: true, usePortrait: false, mobileScrollSupport: false,
       maxShadowOpacity: 0.08, drawShadow: true, flippingTime: 700, autoSize: true
     });
@@ -199,6 +208,7 @@
         nextBtn.disabled = (k >= slides.length - 1);
       } else {
         var p = pageFlip.getCurrentPageIndex();
+        flipMode.classList.toggle("single", p <= 0 || p >= total - 1);
         if (p <= 0) info.textContent = "표지";
         else if (p >= total - 1) info.textContent = "뒤표지";
         else if (p === 1) info.textContent = "면지";
